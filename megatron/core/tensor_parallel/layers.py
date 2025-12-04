@@ -787,6 +787,51 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         # 获取scaling_control参数
         scaling_control = getattr(ctx, 'scaling_control', 'max')
         
+        # 获取layer_idx和rank信息用于tensor保存
+        import os
+        import inspect
+        
+        layer_idx = getattr(ctx, 'layer_idx', None)
+        if layer_idx is None:
+            try:
+                frame = inspect.currentframe()
+                while frame:
+                    frame = frame.f_back
+                    if frame and 'self' in frame.f_locals:
+                        self_obj = frame.f_locals['self']
+                        if hasattr(self_obj, 'layer_number'):
+                            layer_idx = self_obj.layer_number
+                            break
+                        elif hasattr(self_obj, 'layer_idx'):
+                            layer_idx = self_obj.layer_idx
+                            break
+            except:
+                pass
+        
+        rank = None
+        try:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                rank = dist.get_rank()
+        except:
+            pass
+        
+        if rank is None:
+            rank = int(os.environ.get("LOCAL_RANK", 0))
+        
+        # 构造tensor保存参数
+        tensor_save_params = {
+            'layer_type': 'linear',
+            'layer_idx': layer_idx,
+            'operation': 'matmul',
+            'phase': 'forward',
+            'component': 'weight',
+            'rank': rank,
+            'metadata': {
+                'custom_quant_type': custom_quant_type,
+            }
+        }
+        
         # 使用量化算子
         from fake_quant_ops.quant.mxfp import mxfp_matmul
         from fake_quant_ops.quant.hifp import hifp_matmul
@@ -797,14 +842,16 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
                 block_size=32,
-                scaling_control=scaling_control
+                scaling_control=scaling_control,
+                **tensor_save_params
             )
         elif custom_quant_type == 'mxfp8':
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp8_e4m3',
                 block_size=32,
-                scaling_control=scaling_control
+                scaling_control=scaling_control,
+                **tensor_save_params
             )
         elif custom_quant_type == 'hifp8':
             output = hifp_matmul(
