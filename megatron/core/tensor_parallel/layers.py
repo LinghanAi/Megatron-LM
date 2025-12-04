@@ -779,68 +779,12 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         else:
             total_input = input
         
-        # 使用集成了tensor保存功能的量化算子
-        import os
-        import inspect
-        
         # 获取量化类型（支持time-resume自适应量化）
         custom_quant_type = 'mxfp8'
         if hasattr(ctx, '_adaptive_quantization_manager'):
             custom_quant_type = ctx._adaptive_quantization_manager.get_current_quantization_type()
         
-        # 获取scaling_control参数
-        scaling_control = getattr(ctx, 'scaling_control', 'max')
-        
-        # 尝试从调用栈获取layer_idx
-        layer_idx = getattr(ctx, 'layer_idx', None)
-        if layer_idx is None:
-            # 尝试从调用栈中获取layer信息
-            try:
-                frame = inspect.currentframe()
-                while frame:
-                    frame = frame.f_back
-                    if frame and 'self' in frame.f_locals:
-                        self_obj = frame.f_locals['self']
-                        if hasattr(self_obj, 'layer_number'):
-                            layer_idx = self_obj.layer_number
-                            break
-                        elif hasattr(self_obj, 'layer_idx'):
-                            layer_idx = self_obj.layer_idx
-                            break
-            except:
-                pass
-        
-        # 获取rank信息
-        rank = None
-        try:
-            import torch.distributed as dist
-            if dist.is_initialized():
-                rank = dist.get_rank()
-        except:
-            pass
-        
-        if rank is None:
-            rank = int(os.environ.get("LOCAL_RANK", 0))
-        
-        # 保存layer_idx到ctx中，供backward阶段使用
-        ctx.layer_idx = layer_idx
-        
-        # 准备tensor保存参数
-        tensor_save_params = {
-            "layer_type": "linear",
-            "layer_idx": layer_idx,
-            "operation": "forward",
-            "phase": "pre",
-            "component": "linear",
-            "rank": rank,
-            "metadata": {
-                "sequence_parallel": sequence_parallel,
-                "use_bias": ctx.use_bias,
-                "tp_group_size": tp_group.size() if tp_group else None,
-            }
-        }
-        
-        # 使用集成了tensor保存功能的算子
+        # 使用量化算子
         from fake_quant_ops.quant.mxfp import mxfp_matmul
         from fake_quant_ops.quant.hifp import hifp_matmul
         from fake_quant_ops.quant.bf16_operators import bf16_matmul
@@ -849,33 +793,26 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
-                block_size=32,
-                scaling_control=scaling_control,
-                **tensor_save_params
+                block_size=32
             )
         elif custom_quant_type == 'mxfp8':
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp8_e4m3',
-                block_size=32,
-                scaling_control=scaling_control,
-                **tensor_save_params
+                block_size=32
             )
         elif custom_quant_type == 'hifp8':
             output = hifp_matmul(
-                total_input, weight.t(),
-                **tensor_save_params
+                total_input, weight.t()
             )
         elif custom_quant_type == 'bf16':
             output = bf16_matmul(
-                total_input, weight.t(),
-                **tensor_save_params
+                total_input, weight.t()
             )
         else:
             # 对于其他类型，使用BF16算子
             output = bf16_matmul(
-                total_input, weight.t(),
-                **tensor_save_params
+                total_input, weight.t()
             ) 
         if bias is not None:
             output = output + bias
