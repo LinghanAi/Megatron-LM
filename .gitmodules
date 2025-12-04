@@ -1,0 +1,4 @@
+[submodule "fake_quant_ops"]
+	path = fake_quant_ops
+	url = https://github.com/Charles2530/fake_quant_ops.git
+	branch = master
