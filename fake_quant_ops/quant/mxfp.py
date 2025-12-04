@@ -444,12 +444,13 @@ class MXFPMatMul(Function):
     @staticmethod
     def forward(ctx, A: torch.Tensor, B: torch.Tensor,
                 elem_format: str = 'fp8_e5m2', block_size: int = 32,
-                scaling_control: str = None, layer_type: str = None):
+                scaling_control: str = None, layer_type: str = None, layer_idx: int = None):
         ctx.save_for_backward(A, B)
         ctx.elem_format = elem_format
         ctx.block_size = block_size
         ctx.scaling_control = scaling_control
         ctx.layer_type = layer_type
+        ctx.layer_idx = layer_idx
         
         A_q = _quantize_mx(
             A, scale_bits=8, elem_format=elem_format,
@@ -471,20 +472,21 @@ class MXFPMatMul(Function):
             grad_A = torch.matmul(grad_output, B.transpose(-2, -1))
         if ctx.needs_input_grad[1]:
             grad_B = torch.matmul(A.transpose(-2, -1), grad_output)
-        return grad_A, grad_B, None, None, None, None  # None对应elem_format、block_size、scaling_control和layer_type
+        return grad_A, grad_B, None, None, None, None, None  # None对应elem_format、block_size、scaling_control、layer_type和layer_idx
 
 class MXFPBAddBmm(Function):
     @staticmethod
     def forward(ctx, input, batch1, batch2, beta=1.0, alpha=1.0,
-                elem_format='fp8_e5m2', block_size=32, scaling_control=None, layer_type=None):
+                elem_format='fp8_e5m2', block_size=32, scaling_control=None, layer_type=None, layer_idx=None):
         ctx.save_for_backward(input, batch1, batch2)
         ctx.beta, ctx.alpha = beta, alpha
         ctx.elem_format = elem_format
         ctx.block_size = block_size
         ctx.scaling_control = scaling_control
         ctx.layer_type = layer_type
+        ctx.layer_idx = layer_idx
         
-        mm_out = MXFPMatMul.apply(batch1, batch2, elem_format, block_size, scaling_control, layer_type)
+        mm_out = MXFPMatMul.apply(batch1, batch2, elem_format, block_size, scaling_control, layer_type, layer_idx)
         return beta * input + alpha * mm_out
 
     @staticmethod
@@ -500,14 +502,14 @@ class MXFPBAddBmm(Function):
             grad_batch1 = torch.matmul(mm_grad, batch2.transpose(-2, -1))
             grad_batch2 = torch.matmul(batch1.transpose(-2, -1), mm_grad)
         
-        return grad_input, grad_batch1, grad_batch2, None, None, None, None, None, None
+        return grad_input, grad_batch1, grad_batch2, None, None, None, None, None, None, None
 
-def mxfp_matmul(A, B, elem_format='fp8_e5m2', block_size=32, scaling_control=None, layer_type=None):
-    return MXFPMatMul.apply(A, B, elem_format, block_size, scaling_control, layer_type)
+def mxfp_matmul(A, B, elem_format='fp8_e5m2', block_size=32, scaling_control=None, layer_type=None, layer_idx=None):
+    return MXFPMatMul.apply(A, B, elem_format, block_size, scaling_control, layer_type, layer_idx)
 
 def mxfp_baddbmm(input, batch1, batch2, beta=1.0, alpha=1.0,
-                 elem_format='fp8_e5m2', block_size=32, scaling_control=None, layer_type=None):
-    return MXFPBAddBmm.apply(input, batch1, batch2, beta, alpha, elem_format, block_size, scaling_control, layer_type)
+                 elem_format='fp8_e5m2', block_size=32, scaling_control=None, layer_type=None, layer_idx=None):
+    return MXFPBAddBmm.apply(input, batch1, batch2, beta, alpha, elem_format, block_size, scaling_control, layer_type, layer_idx)
 
 def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
     scale_bits = 8
