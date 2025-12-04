@@ -784,6 +784,9 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         if hasattr(ctx, '_adaptive_quantization_manager'):
             custom_quant_type = ctx._adaptive_quantization_manager.get_current_quantization_type()
         
+        # 获取scaling_control参数
+        scaling_control = getattr(ctx, 'scaling_control', 'max')
+        
         # 使用量化算子
         from fake_quant_ops.quant.mxfp import mxfp_matmul
         from fake_quant_ops.quant.hifp import hifp_matmul
@@ -793,13 +796,15 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
-                block_size=32
+                block_size=32,
+                scaling_control=scaling_control
             )
         elif custom_quant_type == 'mxfp8':
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp8_e4m3',
-                block_size=32
+                block_size=32,
+                scaling_control=scaling_control
             )
         elif custom_quant_type == 'hifp8':
             output = hifp_matmul(
