@@ -370,7 +370,7 @@ def _quantize_mx(
     block_size=0,
     round="nearest",
     flush_fp32_subnorms=False,
-    minus_exp=1,
+    minus_exp=None,
 ):
     """Function used for MX* quantization
     """
@@ -443,13 +443,10 @@ from torch.autograd import Function
 class MXFPMatMul(Function):
     @staticmethod
     def forward(ctx, A: torch.Tensor, B: torch.Tensor,
-                elem_format: str = 'fp8_e5m2', block_size: int = 32,
-                scaling_control: str = None, **kwargs):
+                elem_format: str = 'fp8_e5m2', block_size: int = 32):
         ctx.save_for_backward(A, B)
         ctx.elem_format = elem_format
         ctx.block_size = block_size
-        ctx.scaling_control = scaling_control
-        # kwargs用于接收layer_type, layer_idx等参数，但不使用
         
         A_q = _quantize_mx(
             A, scale_bits=8, elem_format=elem_format,
@@ -471,20 +468,18 @@ class MXFPMatMul(Function):
             grad_A = torch.matmul(grad_output, B.transpose(-2, -1))
         if ctx.needs_input_grad[1]:
             grad_B = torch.matmul(A.transpose(-2, -1), grad_output)
-        return grad_A, grad_B, None, None, None  # None对应elem_format、block_size和scaling_control
+        return grad_A, grad_B, None, None  # None对应elem_format和block_size
 
 class MXFPBAddBmm(Function):
     @staticmethod
     def forward(ctx, input, batch1, batch2, beta=1.0, alpha=1.0,
-                elem_format='fp8_e5m2', block_size=32, scaling_control=None, **kwargs):
+                elem_format='fp8_e5m2', block_size=32):
         ctx.save_for_backward(input, batch1, batch2)
         ctx.beta, ctx.alpha = beta, alpha
         ctx.elem_format = elem_format
         ctx.block_size = block_size
-        ctx.scaling_control = scaling_control
-        # kwargs用于接收layer_type, layer_idx等参数，但不使用
         
-        mm_out = MXFPMatMul.apply(batch1, batch2, elem_format, block_size, scaling_control, **kwargs)
+        mm_out = MXFPMatMul.apply(batch1, batch2, elem_format, block_size)
         return beta * input + alpha * mm_out
 
     @staticmethod
@@ -500,14 +495,14 @@ class MXFPBAddBmm(Function):
             grad_batch1 = torch.matmul(mm_grad, batch2.transpose(-2, -1))
             grad_batch2 = torch.matmul(batch1.transpose(-2, -1), mm_grad)
         
-        return grad_input, grad_batch1, grad_batch2, None, None, None, None, None
+        return grad_input, grad_batch1, grad_batch2, None, None, None, None
 
-def mxfp_matmul(A, B, elem_format='fp8_e5m2', block_size=32, scaling_control=None, **kwargs):
-    return MXFPMatMul.apply(A, B, elem_format, block_size, scaling_control, **kwargs)
+def mxfp_matmul(A, B, elem_format='fp8_e5m2', block_size=32):
+    return MXFPMatMul.apply(A, B, elem_format, block_size)
 
 def mxfp_baddbmm(input, batch1, batch2, beta=1.0, alpha=1.0,
-                 elem_format='fp8_e5m2', block_size=32, scaling_control=None, **kwargs):
-    return MXFPBAddBmm.apply(input, batch1, batch2, beta, alpha, elem_format, block_size, scaling_control, **kwargs)
+                 elem_format='fp8_e5m2', block_size=32):
+    return MXFPBAddBmm.apply(input, batch1, batch2, beta, alpha, elem_format, block_size)
 
 def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
     scale_bits = 8
@@ -542,9 +537,9 @@ def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
         round="nearest",
         flush_fp32_subnorms=False,
     )
-    final_q = q + (q_temp - q.detach())
-    final_k = k + (k_temp - k.detach())
-    final_v = v + (v_temp - v.detach())
+    final_q =( q + (q_temp - q.detach())).to(torch.bfloat16)
+    final_k = (k + (k_temp - k.detach())).to(torch.bfloat16)
+    final_v =( v + (v_temp - v.detach())).to(torch.bfloat16)
     return final_q,final_k,final_v
     
 def quant_dequant_tensor(tensor,elem_format='fp8_e5m2'):
@@ -579,3 +574,4 @@ if __name__ == '__main__':
     loss_mxfp = torch.mean((C_bf16 - C_mxfp8) ** 2)
         
     print(f"C_shape:{C_mxfp8.shape},output_max:{torch.max(C_mxfp8)},output_min:{torch.min(C_mxfp8)}")
+    print(f"loss_mxfp: {loss_mxfp}")

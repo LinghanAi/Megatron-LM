@@ -842,16 +842,12 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
                 block_size=32,
-                scaling_control=scaling_control,
-                **tensor_save_params
             )
         elif custom_quant_type == 'mxfp8':
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp8_e4m3',
                 block_size=32,
-                scaling_control=scaling_control,
-                **tensor_save_params
             )
         elif custom_quant_type == 'hifp8':
             output = hifp_matmul(

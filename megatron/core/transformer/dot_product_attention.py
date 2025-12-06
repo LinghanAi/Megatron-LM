@@ -213,9 +213,7 @@ class DotProductAttention(MegatronModule):
                 query.transpose(0, 1),  # [b * np, sq, hn]
                 key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                 beta=0.0,
-                alpha=self.softmax_scale,
-                scaling_control=scaling_control,
-                **tensor_save_params
+                alpha=self.softmax_scale
             )
         elif custom_quant_type == 'mxfp8':
             matmul_result = mxfp_baddbmm(
@@ -223,9 +221,7 @@ class DotProductAttention(MegatronModule):
                 query.transpose(0, 1),  # [b * np, sq, hn]
                 key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                 beta=0.0,
-                alpha=self.softmax_scale,
-                scaling_control=scaling_control,
-                **tensor_save_params
+                alpha=self.softmax_scale
             )
         elif custom_quant_type == 'hifp8':
             matmul_result = hifp_baddbmm(
@@ -233,8 +229,7 @@ class DotProductAttention(MegatronModule):
                 query.transpose(0, 1),  # [b * np, sq, hn]
                 key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                 beta=0.0,
-                alpha=self.softmax_scale,
-                **tensor_save_params
+                alpha=self.softmax_scale
             )
         elif custom_quant_type == 'bf16':
             matmul_result = bf16_baddbmm(
@@ -242,8 +237,7 @@ class DotProductAttention(MegatronModule):
                 query.transpose(0, 1),  # [b * np, sq, hn]
                 key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                 beta=0.0,
-                alpha=self.softmax_scale,
-                **tensor_save_params
+                alpha=self.softmax_scale
             )
         else:
             matmul_result = torch.baddbmm(
@@ -314,13 +308,13 @@ class DotProductAttention(MegatronModule):
         }
         
         if custom_quant_type == 'hifp8':
-            context = hifp_matmul(attention_probs, value.transpose(0, 1), **context_tensor_save_params)
+            context = hifp_matmul(attention_probs, value.transpose(0, 1))
         elif custom_quant_type == 'mxfp8':
-            context = mxfp_matmul(attention_probs, value.transpose(0, 1), 'fp8_e4m3', scaling_control=scaling_control, **context_tensor_save_params)
+            context = mxfp_matmul(attention_probs, value.transpose(0, 1), 'fp8_e4m3')
         elif custom_quant_type == 'mxfp4':
-            context = mxfp_matmul(attention_probs, value.transpose(0, 1), 'fp4_e2m1', scaling_control=scaling_control, **context_tensor_save_params)
+            context = mxfp_matmul(attention_probs, value.transpose(0, 1), 'fp4_e2m1')
         elif custom_quant_type == 'bf16':
-            context = bf16_matmul(attention_probs, value.transpose(0, 1), **context_tensor_save_params)
+            context = bf16_matmul(attention_probs, value.transpose(0, 1))
         else:
             context = torch.bmm(attention_probs, value.transpose(0, 1))
         # change view [b, np, sq, hn]
