@@ -163,9 +163,9 @@ class DotProductAttention(MegatronModule):
 
         # Raw attention scores. [b * np, sq, sk]
         # import pdb;pdb.set_trace()
-        from fake_quant_ops.quant.mxfp import mxfp_baddbmm
-        from fake_quant_ops.quant.hifp import hifp_baddbmm
-        from fake_quant_ops.quant.bf16_operators import bf16_baddbmm
+        from fake_quant_ops.quant.ops.mxfp import mxfp_baddbmm
+        from fake_quant_ops.quant.ops.hifp import hifp_baddbmm
+        from fake_quant_ops.quant.ops.bf16_operators import bf16_baddbmm
         # 从环境变量获取量化类型，默认为hifp8
         import os
         custom_quant_type = 'mxfp8'
@@ -221,7 +221,7 @@ class DotProductAttention(MegatronModule):
                 query.transpose(0, 1),  # [b * np, sq, hn]
                 key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                 beta=0.0,
-                alpha=self.softmax_scale
+                alpha=self.softmax_scale,
             )
         elif custom_quant_type == 'hifp8':
             matmul_result = hifp_baddbmm(
@@ -286,9 +286,9 @@ class DotProductAttention(MegatronModule):
         attention_probs = attention_probs.view(output_size[0] * output_size[1], output_size[2], -1)
 
         # matmul: [b * np, sq, hn]
-        from fake_quant_ops.quant.mxfp import mxfp_matmul
-        from fake_quant_ops.quant.hifp import hifp_matmul
-        from fake_quant_ops.quant.bf16_operators import bf16_matmul
+        from fake_quant_ops.quant.ops.mxfp import mxfp_matmul
+        from fake_quant_ops.quant.ops.hifp import hifp_matmul
+        from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
         # 使用相同的量化类型
         # custom_quant_type 已在上面定义
         
