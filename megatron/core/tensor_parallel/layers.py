@@ -838,10 +838,6 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
         
         if custom_quant_type == 'mxfp4':
-            # 打印确认 minus_exp 参数生效
-            if not hasattr(ctx, '_minus_exp_mxfp4_printed'):
-                print(f"[MXFP4 Quantization] Using minus_exp=0 (layer_idx={layer_idx}, rank={rank})")
-                ctx._minus_exp_mxfp4_printed = True
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
@@ -849,6 +845,10 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
                 minus_exp=0,
             )
         elif custom_quant_type == 'mxfp8':
+            # 打印确认 minus_exp 参数生效
+            if not hasattr(ctx, '_minus_exp_printed'):
+                print(f"[MXFP8 Quantization] Using minus_exp=0 (layer_idx={layer_idx}, rank={rank})")
+                ctx._minus_exp_printed = True
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp8_e4m3',
