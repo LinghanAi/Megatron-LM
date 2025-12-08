@@ -1,6 +1,6 @@
 import torch
-import torch_npu
 from enum import Enum, IntEnum
+import numpy as np
 
 
 FP32_EXPONENT_BIAS = 127
@@ -232,7 +232,7 @@ def _quantize_elemwise_core(A, bits, exp_bits, max_norm, round='nearest',
     return out
 
 
-def _shared_exponents(A, method="max", axes=None, ebits=0, minus_exp=None):
+def _shared_exponents(A, method="max", axes=None, ebits=0, elem_format='fp8_e5m2', minus_exp=None):
     """
     Get shared exponents for the passed matrix A.
     Args:
@@ -257,7 +257,6 @@ def _shared_exponents(A, method="max", axes=None, ebits=0, minus_exp=None):
         shared_exp = torch.abs(A)
     else:
         raise Exception("Unrecognized shared exponent selection method %s" % (method))
-
     # log2(shared_exp) and truncate to integer
     if minus_exp is not None:
         shared_exp = torch.ceil(
@@ -265,6 +264,15 @@ def _shared_exponents(A, method="max", axes=None, ebits=0, minus_exp=None):
                 shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype)
             )
         )
+        if minus_exp == "auto":
+            if elem_format in ['fp8_e5m2', 'fp8_e4m3']:
+                n_bits = 8
+            elif elem_format in ['fp4_e2m1']:
+                n_bits = 4
+            else:
+                raise ValueError("Unsupported element format")
+            minus_exp = calculate_minus_exp(shared_exp, n_bits=n_bits, distribution='gaussian')
+            # print(f"minus_exp is auto, minus_exp: {minus_exp}")
         shared_exp = shared_exp - minus_exp
     else:
         shared_exp = torch.floor(
@@ -399,11 +407,11 @@ def _quantize_mx(
     # Quantize
     ####################
     # add 1 to share exp for the same block
-    shared_exp_axes = [x + 1 for x in axes] if block_size > 0 else axes
+    shared_exp_axes = [x + 1 for x in axes] if block_size > 0 else axes 
 
     # Get shared exponents
     shared_exp = _shared_exponents(
-        A, method=shared_exp_method, axes=shared_exp_axes, ebits=0, minus_exp=minus_exp,
+        A, method=shared_exp_method, axes=shared_exp_axes, ebits=0,elem_format=elem_format, minus_exp=minus_exp,
     )
 
     # Flush subnormal FP32 inputs to zero
@@ -453,18 +461,33 @@ class MXFPMatMul(Function):
         B_q = _quantize_mx(
             B, scale_bits=8, elem_format=elem_format,
             shared_exp_method="max", axes=-2, block_size=block_size,
-            round="nearest", flush_fp32_subnorms=False, minus_exp=minus_exp     
+            round="nearest", flush_fp32_subnorms=False, minus_exp=minus_exp
         )
         return torch.matmul(A_q, B_q)
 
     @staticmethod
     def backward(ctx, grad_output):
         A, B = ctx.saved_tensors
+        A_q = _quantize_mx(
+            A, scale_bits=8, elem_format=ctx.elem_format,
+            shared_exp_method="max", axes=-1, block_size=ctx.block_size,
+            round="nearest", flush_fp32_subnorms=False, minus_exp=ctx.minus_exp
+        )
+        B_q = _quantize_mx(
+            B, scale_bits=8, elem_format=ctx.elem_format,
+            shared_exp_method="max", axes=-2, block_size=ctx.block_size,
+            round="nearest", flush_fp32_subnorms=False, minus_exp=ctx.minus_exp
+        )
+        grad_output_q = _quantize_mx(
+            grad_output, scale_bits=8, elem_format=ctx.elem_format,
+            shared_exp_method="max", axes=-1, block_size=ctx.block_size,
+            round="nearest", flush_fp32_subnorms=False, minus_exp=ctx.minus_exp
+        )
         grad_A = grad_B = None
         if ctx.needs_input_grad[0]:
-            grad_A = torch.matmul(grad_output, B.transpose(-2, -1))
+            grad_A = torch.matmul(grad_output_q, B_q.transpose(-2, -1))
         if ctx.needs_input_grad[1]:
-            grad_B = torch.matmul(A.transpose(-2, -1), grad_output)
+            grad_B = torch.matmul(A_q.transpose(-2, -1), grad_output_q)
         return grad_A, grad_B, None, None  # None对应elem_format和block_size
 
 class MXFPBAddBmm(Function):
@@ -483,14 +506,28 @@ class MXFPBAddBmm(Function):
     def backward(ctx, grad_output):
         input, batch1, batch2 = ctx.saved_tensors
         beta, alpha = ctx.beta, ctx.alpha
-        
+        batch1_q = _quantize_mx(
+            batch1, scale_bits=8, elem_format=ctx.elem_format,
+            shared_exp_method="max", axes=-1, block_size=ctx.block_size,
+            round="nearest", flush_fp32_subnorms=False, minus_exp=ctx.minus_exp
+        )
+        batch2_q = _quantize_mx(
+            batch2, scale_bits=8, elem_format=ctx.elem_format,
+            shared_exp_method="max", axes=-2, block_size=ctx.block_size,
+            round="nearest", flush_fp32_subnorms=False, minus_exp=ctx.minus_exp
+        )
+        grad_output_q = _quantize_mx(
+            grad_output, scale_bits=8, elem_format=ctx.elem_format,
+            shared_exp_method="max", axes=-1, block_size=ctx.block_size,
+            round="nearest", flush_fp32_subnorms=False, minus_exp=ctx.minus_exp
+        )
         grad_input = grad_batch1 = grad_batch2 = None
         if ctx.needs_input_grad[0]:
-            grad_input = beta * grad_output
+            grad_input = beta * grad_output_q
         if ctx.needs_input_grad[1] or ctx.needs_input_grad[2]:
-            mm_grad = alpha * grad_output
-            grad_batch1 = torch.matmul(mm_grad, batch2.transpose(-2, -1))
-            grad_batch2 = torch.matmul(batch1.transpose(-2, -1), mm_grad)
+            mm_grad = alpha * grad_output_q
+            grad_batch1 = torch.matmul(mm_grad, batch2_q.transpose(-2, -1))
+            grad_batch2 = torch.matmul(batch1_q.transpose(-2, -1), mm_grad)
         
         return grad_input, grad_batch1, grad_batch2, None, None, None, None
 
@@ -501,7 +538,7 @@ def mxfp_baddbmm(input, batch1, batch2, beta=1.0, alpha=1.0,
                  elem_format='fp8_e5m2', block_size=32, minus_exp=None):
     return MXFPBAddBmm.apply(input, batch1, batch2, beta, alpha, elem_format, block_size, minus_exp)
 
-def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
+def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2',minus_exp=None):
     scale_bits = 8
     q_temp,k_temp,v_temp = q.clone(),k.clone(),v.clone()
     q_temp = _quantize_mx(
@@ -513,6 +550,7 @@ def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
         block_size=16,
         round="nearest",
         flush_fp32_subnorms=False,
+        minus_exp=minus_exp
     )
     k_temp = _quantize_mx(
         k_temp.detach(),
@@ -523,6 +561,7 @@ def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
         block_size=16,
         round="nearest",
         flush_fp32_subnorms=False,
+        minus_exp=minus_exp
     )
     v_temp = _quantize_mx(
         v_temp.detach(),
@@ -533,13 +572,15 @@ def quant_dequant_qkv(q,k,v,elem_format='fp8_e5m2'):
         block_size=16,
         round="nearest",
         flush_fp32_subnorms=False,
+        minus_exp=minus_exp
     )
-    final_q = q + (q_temp - q.detach())
-    final_k = k + (k_temp - k.detach())
-    final_v = v + (v_temp - v.detach())
+    final_q = (q + (q_temp - q.detach())).to(torch.bfloat16)
+    final_k = (k + (k_temp - k.detach())).to(torch.bfloat16)
+    final_v = (v + (v_temp - v.detach())).to(torch.bfloat16)
     return final_q,final_k,final_v
     
-def quant_dequant_tensor(tensor,elem_format='fp8_e5m2'):
+    
+def quant_dequant_tensor(tensor,elem_format='fp8_e5m2',minus_exp=None):
     scale_bits = 8
     tensor_temp = tensor.clone()
     tensor_temp = _quantize_mx(
@@ -551,23 +592,87 @@ def quant_dequant_tensor(tensor,elem_format='fp8_e5m2'):
         block_size=16,
         round="nearest",
         flush_fp32_subnorms=False,
+        minus_exp=minus_exp
     )
     final_tensor = tensor + (tensor_temp - tensor.detach())
     return final_tensor
 
+import torch
+import math
+
+def _calculate_log2_beta(n_bits: int, distribution: str = 'gaussian') -> float:
+    if distribution.lower() == 'laplace':
+        # 拉普拉斯分布的多项式近似: α_opt/E[|X|] ≈ 1.15 * n_bits + 0.59
+        beta = 1.15 * n_bits + 0.59
+    elif distribution.lower() == 'gaussian':
+        # 高斯分布的多项式近似: α_opt/E[|X|] ≈ 0.76 * n_bits + 0.41
+        beta = 0.76 * n_bits + 0.41
+    else:
+        raise ValueError("Unsupported distribution. Please choose 'laplace' or 'gaussian'.")
+    
+    return math.log2(beta)
+
+def calculate_minus_exp(
+    tensor_block: torch.Tensor,
+    n_bits: int = 8,
+    distribution: str = 'gaussian'
+) -> torch.Tensor:
+    if tensor_block.numel() == 0:
+        return torch.tensor(0, dtype=torch.int)
+
+    # 添加一个小的 epsilon 以防止对零张量取 log(0)。
+    epsilon = 1e-9
+    
+    x_abs = torch.abs(tensor_block)
+    
+    amax = torch.max(x_abs)
+    if amax < epsilon:
+        return torch.tensor(0, dtype=torch.int)
+        
+    mean_abs = torch.mean(x_abs)
+    if mean_abs < epsilon:
+        # 如果均值为零但最大值不为零，则为非常稀疏的张量。
+        # 不进行缩减是最安全的选择。
+        return torch.tensor(0, dtype=torch.int)
+
+    # E_max: 最大值的对数近似
+    # E_max ≈ floor(log₂(max(|x|)))
+    e_max = torch.floor(torch.log2(amax))
+
+    # E_mean: 平均值的对数近似
+    # E_mean ≈ log₂(mean(|x|))
+    e_mean = torch.log2(mean_abs)
+
+    # log₂(β): 根据 n_bits 和分布计算
+    log2_beta = _calculate_log2_beta(n_bits, distribution)
+
+    # k ≈ (E_max - E_mean) - log₂(β)
+    minus_exp_float = (e_max - e_mean) - log2_beta
+    # print(f"minus_exp_float: {minus_exp_float}")
+    
+    # 四舍五入到最近的整数并确保其不为负
+    minus_exp = torch.round(minus_exp_float)
+    minus_exp_clipped = torch.clamp(minus_exp, min=0)
+
+    return minus_exp_clipped.to(torch.int)
+
+
 if __name__ == '__main__':
-    A = torch.randn(1024, 1024).npu()
-    mxfp8 = _quantize_mx(A, scale_bits=8, elem_format='fp8_e4m3', shared_exp_method="max", axes=-1, block_size=16, round="nearest", flush_fp32_subnorms=False)
+    A = torch.randn(1024, 1024).cuda()
+    mxfp8 = _quantize_mx(A, scale_bits=8, elem_format='fp4_e2m1', shared_exp_method="max", axes=-1, block_size=32, round="nearest", flush_fp32_subnorms=False, minus_exp="auto")
 
     print("origin_A:", A)
     print("mxfp8_A:", mxfp8)
+    loss_A = torch.mean((A - mxfp8) ** 2)
+    print(f"loss_A: {loss_A}")
     
-    print(f"A_shape:{A.shape},grad_max:{torch.max(A)},grad_min:{torch.min(A)}")
-    B = torch.randn(1024, 1024).npu()
-    print(f"B_shape:{B.shape},input_max:{torch.max(B)},input_min:{torch.min(B)}")
+    print(f"A_shape:{A.shape},A_max:{torch.max(A)},A_min:{torch.min(A)}")
+    B = torch.randn(1024, 1024).cuda()
+    print(f"B_shape:{B.shape},B_max:{torch.max(B)},B_min:{torch.min(B)}")
 
     C_mxfp8 = mxfp_matmul(A.transpose(-2,-1),B)
     C_bf16 = torch.matmul(A.transpose(-2,-1),B).to(torch.bfloat16)
     loss_mxfp = torch.mean((C_bf16 - C_mxfp8) ** 2)
         
-    print(f"C_shape:{C_mxfp8.shape},output_max:{torch.max(C_mxfp8)},output_min:{torch.min(C_mxfp8)}")
+    print(f"C_shape:{C_mxfp8.shape},C_mxfp8_max:{torch.max(C_mxfp8)},C_mxfp8_min:{torch.min(C_mxfp8)}")
+    print(f"loss_mxfp: {loss_mxfp}")

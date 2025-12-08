@@ -83,3 +83,7 @@ Dockerfile.build
 *.bak
 *.backup
 
+
+
+data/
+*.zip
