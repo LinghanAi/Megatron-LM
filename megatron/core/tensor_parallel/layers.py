@@ -833,21 +833,27 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         }
         
         # 使用量化算子
-        from fake_quant_ops.quant.mxfp import mxfp_matmul
-        from fake_quant_ops.quant.hifp import hifp_matmul
-        from fake_quant_ops.quant.bf16_operators import bf16_matmul
+        from fake_quant_ops.quant.ops.mxfp import mxfp_matmul
+        from fake_quant_ops.quant.ops.hifp import hifp_matmul
+        from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
         
         if custom_quant_type == 'mxfp4':
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
                 block_size=32,
+                minus_exp=0,
             )
         elif custom_quant_type == 'mxfp8':
+            # 打印确认 minus_exp 参数生效
+            if not hasattr(ctx, '_minus_exp_printed'):
+                print(f"[MXFP8 Quantization] Using minus_exp=0 (layer_idx={layer_idx}, rank={rank})")
+                ctx._minus_exp_printed = True
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp8_e4m3',
                 block_size=32,
+                minus_exp=0,
             )
         elif custom_quant_type == 'hifp8':
             output = hifp_matmul(
@@ -948,8 +954,8 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
                 }
             )
         
-        from fake_quant_ops.quant.mxfp import mxfp_matmul
-        from fake_quant_ops.quant.hifp import hifp_matmul
+        from fake_quant_ops.quant.ops.mxfp import mxfp_matmul
+        from fake_quant_ops.quant.ops.hifp import hifp_matmul
         custom_quant_type = 'mxfp8'
         if custom_quant_type == 'mxfp4':
             grad_input = mxfp_matmul(grad_output,weight,'fp4_e2m1').to(torch.bfloat16)
@@ -1055,7 +1061,7 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
             }
             
             # 使用BF16算子计算梯度并自动保存
-            from fake_quant_ops.quant.bf16_operators import bf16_matmul
+            from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
             grad_weight = bf16_matmul(
                 grad_output.t(), total_input,
                 **tensor_save_params
