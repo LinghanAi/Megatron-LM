@@ -842,7 +842,7 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
                 block_size=32,
-                minus_exp=None,
+                minus_exp=0,
             )
 
         elif custom_quant_type == 'mxfp8':
