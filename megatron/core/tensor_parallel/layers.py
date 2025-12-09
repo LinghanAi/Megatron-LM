@@ -838,12 +838,11 @@ class CustomLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
         
         if custom_quant_type == 'mxfp4':
-            print("DEBUG: minus_exp set to 1")
             output = mxfp_matmul(
                 total_input, weight.t(),
                 elem_format='fp4_e2m1',
                 block_size=32,
-                minus_exp=1,
+                minus_exp=None,
             )
 
         elif custom_quant_type == 'mxfp8':
