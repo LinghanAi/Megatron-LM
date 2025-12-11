@@ -162,91 +162,32 @@ class DotProductAttention(MegatronModule):
         )
 
         # Raw attention scores. [b * np, sq, sk]
-        # import pdb;pdb.set_trace()
-        from fake_quant_ops.quant.ops.mxfp import mxfp_baddbmm
-        from fake_quant_ops.quant.ops.hifp import hifp_baddbmm
-        from fake_quant_ops.quant.ops.bf16_operators import bf16_baddbmm
-        # 从环境变量获取量化类型，默认为hifp8
-        import os
-        custom_quant_type = 'mxfp8'
-        
-        # 支持time-resume自适应量化
-        try:
-            from megatron.core.adaptive_quantization import get_adaptive_quantization_manager
-            # 尝试从全局状态获取量化管理器
-            if hasattr(self, '_adaptive_quantization_manager'):
-                custom_quant_type = self._adaptive_quantization_manager.get_current_quantization_type()
-        except ImportError:
-            pass
-        
-        # 获取scaling_control参数
-        scaling_control = 'max'  # 默认值，后续可以从args获取
-        
-        # 准备tensor保存参数
-        tensor_save_params = {
-            "layer_type": "attention",
-            "layer_idx": getattr(self, 'layer_number', None),
-            "operation": "forward",
-            "phase": "pre",
-            "component": "attention",
-            "rank": None,  # 稍后设置
-            "metadata": {
-                "softmax_scale": self.softmax_scale,
-                "attention_scores": True,
-            }
-        }
-        
-        # 获取rank信息
-        try:
-            import torch.distributed as dist
-            if dist.is_initialized():
-                tensor_save_params["rank"] = dist.get_rank()
-        except:
-            pass
-        
-        if tensor_save_params["rank"] is None:
-            tensor_save_params["rank"] = int(os.environ.get("LOCAL_RANK", 0))
-        
-        if custom_quant_type == 'mxfp4':
-            matmul_result = mxfp_baddbmm(
-                matmul_input_buffer,
-                query.transpose(0, 1),  # [b * np, sq, hn]
-                key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=0.0,
-                alpha=self.softmax_scale
-            )
-        elif custom_quant_type == 'mxfp8':
-            matmul_result = mxfp_baddbmm(
-                matmul_input_buffer,
-                query.transpose(0, 1),  # [b * np, sq, hn]
-                key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=0.0,
-                alpha=self.softmax_scale,
-            )
-        elif custom_quant_type == 'hifp8':
-            matmul_result = hifp_baddbmm(
-                matmul_input_buffer,
-                query.transpose(0, 1),  # [b * np, sq, hn]
-                key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=0.0,
-                alpha=self.softmax_scale
-            )
-        elif custom_quant_type == 'bf16':
-            matmul_result = bf16_baddbmm(
-                matmul_input_buffer,
-                query.transpose(0, 1),  # [b * np, sq, hn]
-                key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=0.0,
-                alpha=self.softmax_scale
-            )
-        else:
-            matmul_result = torch.baddbmm(
-                matmul_input_buffer,
-                query.transpose(0, 1),  # [b * np, sq, hn]
-                key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=0.0,
-                alpha=self.softmax_scale,
-            )
+        # custom_quant_type 自适应量化逻辑已按需求注释掉，改回标准算子实现
+        # from fake_quant_ops.quant.ops.mxfp import mxfp_baddbmm
+        # from fake_quant_ops.quant.ops.hifp import hifp_baddbmm
+        # from fake_quant_ops.quant.ops.bf16_operators import bf16_baddbmm
+        # import os
+        # custom_quant_type = 'mxfp8'
+        # try:
+        #     from megatron.core.adaptive_quantization import get_adaptive_quantization_manager
+        #     if hasattr(self, '_adaptive_quantization_manager'):
+        #         custom_quant_type = self._adaptive_quantization_manager.get_current_quantization_type()
+        # except ImportError:
+        #     pass
+        # tensor_save_params = {...}
+        # if custom_quant_type == 'mxfp4':
+        #     matmul_result = mxfp_baddbmm(...)
+        # elif custom_quant_type == 'mxfp8':
+        #     ...
+        # 其余分支略
+
+        matmul_result = torch.baddbmm(
+            matmul_input_buffer,
+            query.transpose(0, 1),  # [b * np, sq, hn]
+            key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+            beta=0.0,
+            alpha=self.softmax_scale,
+        )
 
         # change view to [b, np, sq, sk]
         attention_scores = matmul_result.view(*output_size)
@@ -286,37 +227,18 @@ class DotProductAttention(MegatronModule):
         attention_probs = attention_probs.view(output_size[0] * output_size[1], output_size[2], -1)
 
         # matmul: [b * np, sq, hn]
-        from fake_quant_ops.quant.ops.mxfp import mxfp_matmul
-        from fake_quant_ops.quant.ops.hifp import hifp_matmul
-        from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
-        # 使用相同的量化类型
-        # custom_quant_type 已在上面定义
-        
-        # 准备tensor保存参数（用于context计算）
-        context_tensor_save_params = {
-            "layer_type": "attention",
-            "layer_idx": getattr(self, 'layer_number', None),
-            "operation": "forward",
-            "phase": "post",
-            "component": "FA",
-            "rank": tensor_save_params["rank"],  # 重用之前的rank
-            "metadata": {
-                "attention_mask_shape": list(attention_mask.shape) if attention_mask is not None else None,
-                "attn_mask_type": str(attn_mask_type) if attn_mask_type is not None else None,
-                "output_shape": None,  # 稍后设置
-            }
-        }
-        
-        if custom_quant_type == 'hifp8':
-            context = hifp_matmul(attention_probs, value.transpose(0, 1))
-        elif custom_quant_type == 'mxfp8':
-            context = mxfp_matmul(attention_probs, value.transpose(0, 1), 'fp8_e4m3')
-        elif custom_quant_type == 'mxfp4':
-            context = mxfp_matmul(attention_probs, value.transpose(0, 1), 'fp4_e2m1')
-        elif custom_quant_type == 'bf16':
-            context = bf16_matmul(attention_probs, value.transpose(0, 1))
-        else:
-            context = torch.bmm(attention_probs, value.transpose(0, 1))
+        # custom_quant_type 上下文计算路径同样被注释
+        # from fake_quant_ops.quant.ops.mxfp import mxfp_matmul
+        # from fake_quant_ops.quant.ops.hifp import hifp_matmul
+        # from fake_quant_ops.quant.ops.bf16_operators import bf16_matmul
+        # context_tensor_save_params = {...}
+        # if custom_quant_type == 'hifp8':
+        #     context = hifp_matmul(...)
+        # elif custom_quant_type == 'mxfp8':
+        #     ...
+        # 其余分支略
+
+        context = torch.bmm(attention_probs, value.transpose(0, 1))
         # change view [b, np, sq, hn]
         context = context.view(*output_size)
 
