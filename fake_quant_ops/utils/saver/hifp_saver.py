@@ -1,5 +1,5 @@
 import numpy as np
-from fake_quant_ops.quant.ops.qtype import QType
+from fake_quant_ops.quant.qtype import QType
 from torch import Tensor
 import torch
 from torch.autograd import Function
